@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+.. module:: zlel_main.py
+    :synopsis:
+
+.. moduleauthor:: YOUR NAME AND E-MAIL
+
+
+"""
+
+import numpy as np
+import sys
+
+def cir_parser(filename):
+    """
+    Testu fitxategia irakurri eta 4 matrizetan banatzen du.
+    """
+    cir_el = []
+    cir_nd = []
+    cir_val = []
+    cir_ctr = []
+    
+    try:
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        sys.exit(f"File corrupted: {filename} not found.")
+
+    # 1. Parsing: Lerroz lerro irakurri
+    for line in lines:
+        parts = line.strip().split()
+        # Lerro hutsak edo iruzkinak saltatu
+        if not parts or parts[0].startswith('.'): 
+            continue
+        
+        # Elementuaren Izena (cir_el)
+        cir_el.append(parts[0])
+        
+        # Nodoak eta Balioak bereizi
+        # Formatua SPICE estandarraren arabera aldatzen da
+        el_type = parts[0][0].upper()
+        
+        # Nodoak identifikatu
+        if el_type in ['Q']: # BJT (3 nodo)
+            row_nd = parts[1:4] + ['0'] # 4ra bete
+            vals = parts[4:]
+        elif el_type in ['A']: # OpAmp (4 nodo)
+            row_nd = parts[1:5]
+            vals = parts[5:]
+        elif el_type in ['E', 'G']: # Menpekoak
+            row_nd = parts[1:3] + ['0', '0'] # Sinplifikazioa
+            vals = parts[3:]
+        else: # R, V, I... (2 nodo)
+            row_nd = parts[1:3] + ['0', '0']
+            vals = parts[3:]
+            
+        # Nodoak zenbaki bihurtu
+        try:
+            cir_nd.append([int(x) for x in row_nd])
+        except ValueError:
+            sys.exit(f"Error parsing nodes in line: {line}")
+            
+        # Balioak gorde (string moduan mantendu, batzutan '1k' bezalakoak direlako)
+        # Matrize karratua izateko, hutsuneak bete
+        cir_val.append(vals)
+        cir_ctr.append(['0']) # Oraingoz dummy
+
+    # NumPy array bihurtu irteerarako
+    # 'object' mota erabiltzen dugu luzera desberdinekoak onartzeko
+    return (np.array(cir_el), 
+            np.array(cir_nd), 
+            np.array(cir_val, dtype=object), 
+            np.array(cir_ctr))
+
+def topology_builder(cir_el, cir_nd):
+    """
+    Elementuetatik abiatuta adarrak (branches) sortzen ditu.
+    Elementu batzuek (Q, A) adar bat baino gehiago sortzen dute.
+    """
+    branches = []
+    
+    for i, name in enumerate(cir_el):
+        el_type = name[0].upper()
+        nodes = cir_nd[i] # [n1, n2, n3, n4]
+        
+        if el_type == 'Q':
+            # Q -> 2 adar: _be eta _bc
+            # nodes: [Collector, Base, Emitter] -> indices 0, 1, 2
+            branches.append({
+                'name': name + "_be",
+                'n_from': nodes[1], # Base
+                'n_to': nodes[2]    # Emitter
+            })
+            branches.append({
+                'name': name + "_bc",
+                'n_from': nodes[1], # Base
+                'n_to': nodes[0]    # Collector
+            })
+        elif el_type == 'A':
+            # A -> 2 adar: _in eta _ou
+            # nodes: [N+, N-, Out, Ref]
+            branches.append({
+                'name': name + "_in",
+                'n_from': nodes[0], # N+
+                'n_to': nodes[1]    # N-
+            })
+            branches.append({
+                'name': name + "_ou",
+                'n_from': nodes[2], # Out
+                'n_to': nodes[3]    # Ref
+            })
+        else:
+            # Elementu arruntak -> Adar 1
+            branches.append({
+                'name': name,
+                'n_from': nodes[0],
+                'n_to': nodes[1]
+            })
+            
+    return branches
+
+def build_incidence_matrix(branches, nodes):
+    """Intzidentzia matrizea (Aa) sortzen du"""
+    num_nodes = len(nodes)
+    num_branches = len(branches)
+    Aa = np.zeros((num_nodes, num_branches), dtype=int)
+    
+    node_map = {n: i for i, n in enumerate(nodes)}
+    
+    for j, br in enumerate(branches):
+        if br['n_from'] in node_map:
+            Aa[node_map[br['n_from']], j] = 1
+        if br['n_to'] in node_map:
+            Aa[node_map[br['n_to']], j] = -1
+            
+    return Aa
+
+def print_cir_info(cir_el, cir_nd, b, n, nodes, el_num):
+    """ Prints the info of the circuit:
+        |     1.- Elements info
+        |     2.- Node info
+        |     3.- Branch info
+        |     4.- Variable info
+    Args:
+        | cir_el: reshaped cir_el (branches names)
+        | cir_nd: reshaped cir_nd. Now it will be a(b,2) matrix
+        | b: # of branches
+        | n: # number of nodes
+        | nodes: an array with the circuit nodes sorted
+        | el_num:  the # of elements
+    """
+    # Element info
+    print(str(el_num) + ' Elements')
+    # Node info
+    print(str(n) + ' Different nodes: ' + str(nodes))
+    # Branch info
+    print("\n" + str(b) + " Branches: ")
+
+    for i in range(1, b+1):
+        indent = 12  # Number of blanks for indent
+        # cir_el array bat da, elementua lortu
+        el_name = cir_el[i-1]
+        
+        string = ("\t" + str(i) + ". branch:\t" +
+                  str(el_name) + "i".rjust(indent  - len(str(el_name))) +
+                  str(i) + "v".rjust(indent  - len(str(i))) + str(i) +
+                  " = e" + str(cir_nd[i-1, 0]) +
+                  " - e" + str(cir_nd[i-1, 1]))
+        print(string)
+
+    # Variable info
+    print("\n" + str(2*b + (n-1)) + " variables: ")
+    # print all the nodes but the first(0 because is sorted)
+    for i in nodes[1:]:
+        print("e"+str(i)+", ", end="", flush=True)
+    for i in range(b):
+        print("i"+str(i+1)+", ", end="", flush=True)
+    for i in range(b-1):
+        print("v"+str(i+1)+", ", end="", flush=True)
+    print("v"+str(b))
+
+if __name__ == "__main__":
+    # Test txikia modulu hau bakarrik exekutatzen bada
+    print("Modulu hau zlel_main.py-tik exekutatu behar da.")
