@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+.. module:: zlel_main.py
+    :synopsis:
+
+.. moduleauthor:: YOUR NAME AND E-MAIL
+
+
+"""
+
+import sys
+import numpy as np
+import zlel.zlel_p1 as zl1
+
+if __name__ == "__main__":
+    # 1. Fitxategiaren izena lortu
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+    else:
+        # ALDATU HAU: Zure .cir fitxategiaren bidea jarri hemen probatzeko
+        filename = "cirs/0_zlel_V_R_Q.cir"
+    
+    print(f"Reading file: {filename}")
+
+    # 2. Parseatu (datuak irakurri)
+    cir_el, cir_nd, cir_val, cir_ctr = zl1.cir_parser(filename)
+    
+    # 3. Topologia prozesatu (Adarrak sortu)
+    branches = zl1.topology_builder(cir_el, cir_nd)
+    
+    # 4. Datuak prestatu 'print_cir_info' funtziorako
+    # Funtzio horrek formatu oso zehatza eskatzen du (numpy array-ak)
+    
+    # Adarren izenak array batean
+    branches_names = np.array([b['name'] for b in branches])
+    
+    # Adarren nodoak (From, To) matrize batean
+    branches_nodes = np.array([[b['n_from'], b['n_to']] for b in branches])
+    
+    # Nodo guztiak lortu eta ordenatu
+    all_nodes = set(cir_nd.flatten())
+    sorted_nodes = np.array(sorted(list(all_nodes)))
+    
+    b = len(branches)      # Adar kopurua
+    n = len(sorted_nodes)  # Nodo kopurua
+    el_num = len(cir_el)   # Elementu kopurua
+    
+    # 5. Emaitzak inprimatu (irakaslearen funtzioa erabiliz)
+    zl1.print_cir_info(branches_names, branches_nodes, b, n, sorted_nodes, el_num)
+    
+    # 6. Intzidentzia Matrizea kalkulatu eta erakutsi
+    Aa = zl1.build_incidence_matrix(branches, sorted_nodes)
+    print("\nIncidence Matrix (Aa):")
+    print(Aa)
