@@ -1,0 +1,194 @@
+# -*- coding: utf-8 -*-
+"""
+.. module:: zlel_p2
+    :synopsis: Zirkuitu erresistibo linealen ebazpena (Tableau matrizeak eta simulazioak).
+
+.. moduleauthor:: Erik Elorduy eta Aitor Serrano
+"""
+
+import os
+import numpy as np
+
+def build_MNUs(cir_el, cir_val, cir_ctr, branches, t=None, sweep_el=None, sweep_val=None):
+    """
+    Elementu bakoitzaren definizio ekuazioetatik M, N eta Us matrizeak sortzen ditu.
+
+    Args:
+        cir_el (numpy.ndarray): Elementuen izenak.
+        cir_val (numpy.ndarray): Elementuen balioak.
+        cir_ctr (numpy.ndarray): Kontrol elementuak.
+        branches (list): Adarren zerrenda.
+        t (float, optional): Denbora balioa .TR analisirako.
+        sweep_el (str, optional): Ekorketa egiten ari den elementuaren izena (.DC).
+        sweep_val (float, optional): Ekorketaren uneko balioa.
+
+    Returns:
+        tuple: (M, N, Us) matrizeak (numpy.ndarray).
+    """
+    b = len(branches)
+    M = np.zeros((b, b), dtype=float)
+    N = np.zeros((b, b), dtype=float)
+    Us = np.zeros((b, 1), dtype=float)
+    
+    # Adarren izenak indizeekin lotzeko hiztegia (kontrol elementuentzat erabilgarria)
+    br_map = {br['name'].upper(): i for i, br in enumerate(branches)}
+    
+    for i, el_name in enumerate(cir_el):
+        el_type = el_name[0].upper()
+        
+        # Zein adarretan gauden bilatu
+        if el_type in ['A', 'Q']:
+            j = br_map[el_name.upper() + ("_IN" if el_type == 'A' else "_BE")]
+            j2 = br_map[el_name.upper() + ("_OU" if el_type == 'A' else "_BC")]
+        else:
+            j = br_map[el_name.upper()]
+            
+        val = cir_val[i][0] if len(cir_val[i]) > 0 else 0
+        
+        # Ekorketa bada, balioa gainidatzi
+        if sweep_el is not None and el_name.upper() == sweep_el.upper():
+            val = sweep_val
+
+        if el_type == 'R':
+            M[j, j] = 1
+            N[j, j] = -val
+        elif el_type == 'V':
+            M[j, j] = 1
+            Us[j, 0] = val
+        elif el_type == 'I':
+            N[j, j] = 1
+            Us[j, 0] = val
+        elif el_type == 'E': # VCVS
+            ctrl_j = br_map[cir_ctr[i].upper()]
+            M[j, j] = 1
+            M[j, ctrl_j] = -val
+        elif el_type == 'G': # VCCS
+            ctrl_j = br_map[cir_ctr[i].upper()]
+            N[j, j] = 1
+            M[j, ctrl_j] = -val
+        elif el_type == 'H': # CCVS
+            ctrl_j = br_map[cir_ctr[i].upper()]
+            M[j, j] = 1
+            N[j, ctrl_j] = -val
+        elif el_type == 'F': # CCCS
+            ctrl_j = br_map[cir_ctr[i].upper()]
+            N[j, j] = 1
+            N[j, ctrl_j] = -val
+        elif el_type in ['B', 'Y']: # Sinusoidalak
+            anp, maiz, fasea = cir_val[i][0], cir_val[i][1], cir_val[i][2]
+            # TR bada formula aplikatu, bestela (OP/DC) anplitudea erabili
+            uneko_balioa = anp * np.sin(2 * np.pi * maiz * t + np.pi/180 * fasea) if t is not None else anp
+            if el_type == 'B':
+                M[j, j] = 1
+                Us[j, 0] = uneko_balioa
+            else:
+                N[j, j] = 1
+                Us[j, 0] = uneko_balioa
+        elif el_type == 'A': # OpAmp (Ideala)
+            # Sarrera (in): v_in = 0
+            M[j, j] = 1 
+            # Irteera (ou): i_in = 0
+            N[j2, j] = 1 
+
+    return M, N, Us
+
+def build_tableau(Aa, M, N):
+    """
+    Tableau matrizea (T) eraikitzen du A, M eta N matrizeetatik abiatuta.
+    """
+    A = Aa[1:, :] # Erreferentzia nodoa (0) kendu
+    n_minus_1, b = A.shape
+    
+    Z_nn = np.zeros((n_minus_1, n_minus_1))
+    Z_nb = np.zeros((n_minus_1, b))
+    Z_bn = np.zeros((b, n_minus_1))
+    I_bb = np.eye(b)
+    Z_bb = np.zeros((b, b))
+    
+    # [ 0    0   A ]
+    # [-A^T  I   0 ]
+    # [ 0    M   N ]
+    row1 = np.hstack((Z_nn, Z_nb, A))
+    row2 = np.hstack((-A.T, I_bb, Z_bb))
+    row3 = np.hstack((Z_bn, M, N))
+    
+    T = np.vstack((row1, row2, row3))
+    return T
+
+def solve_tableau(T, Us, n_minus_1):
+    """Tableau sistema ebazten du ([T][x] = [U])."""
+    dim = T.shape[0]
+    U = np.zeros((dim, 1))
+    U[-len(Us):, 0] = Us[:, 0] # Us matrizea bukaeran sartu
+    
+    sol = np.linalg.solve(T, U)
+    return sol
+
+def do_sweep(filename, sim_type, start, end, step, cir_el, cir_val, cir_ctr, branches, Aa, n, b, source=None):
+    """
+    DC edo TR ekorketa bat burutzen du eta emaitzak CSV batean gordetzen ditu.
+    """
+    ext = ".dc" if sim_type == 'dc' else ".tr"
+    out_file = save_sim_output(filename, "sims", ext)
+    
+    header_start = source.upper() if sim_type == 'dc' else "t"
+    header = build_csv_header(header_start, b, n)
+    
+    with open(out_file, 'w') as f:
+        f.write(header + "\n")
+        
+        # Ekorketa begizta
+        for val in np.arange(start, end + step/2, step):
+            if sim_type == 'dc':
+                M, N, Us = build_MNUs(cir_el, cir_val, cir_ctr, branches, sweep_el=source, sweep_val=val)
+            else: # tr
+                M, N, Us = build_MNUs(cir_el, cir_val, cir_ctr, branches, t=val)
+                
+            T = build_tableau(Aa, M, N)
+            sol = solve_tableau(T, Us, n-1)
+            
+            # Formatu zehatza CSVrako
+            sol_flat = [val] + [float(s[0]) for s in sol]
+            sol_str = ','.join([f"{x:.9f}" for x in sol_flat])
+            f.write(sol_str + "\n")
+            
+    print(f"\n{sim_type.upper()} simulazioa osatuta: {out_file}")
+
+# Irakasleak emandako funtzioak (aldaketarik gabe)
+def print_solution(sol, b, n):
+    if sol.dtype == np.float64:
+        np.set_printoptions(sign=' ')
+        tmp = np.zeros([np.size(sol), 1], dtype=float)
+        for ind in range(np.size(sol)): tmp[ind] = np.array(sol[ind])
+        sol = tmp
+
+    tolerance = -1e-9
+    print("\n========== Nodes voltage to reference ========")
+    for i in range(1, n):
+        value = sol[i-1][0]
+        print(f"e{i} = [{0.0 if value <= 0 and value >= tolerance else value:10.9f}]")
+    print("\n========== Branches voltage difference ========")
+    for i in range(1, b+1):
+        value = sol[i+n-2][0]
+        print(f"v{i} = [{0.0 if value <= 0 and value >= tolerance else value:10.9f}]")
+    print("\n=============== Branches currents ==============")
+    for i in range(1, b+1):
+        value = sol[i+b+n-2][0]
+        print(f"i{i} = [{0.0 if value <= 0 and value >= tolerance else value:10.9f}]")
+    print("\n================= End solution =================\n")
+
+def build_csv_header(tvi, b, n):
+    header = tvi
+    for i in range(1, n): header += f",e{i}"
+    for i in range(1, b+1): header += f",v{i}"
+    for i in range(1, b+1): header += f",i{i}"
+    return header
+
+def save_sim_output(filename, sims_folder_name, extension):
+    if not os.path.exists(filename): return None
+    filename = os.path.abspath(filename)
+    dir_path, base_name = os.path.split(filename)
+    base_name, _ = os.path.splitext(base_name)
+    new_dir_path = os.path.join(dir_path, sims_folder_name)
+    if not os.path.exists(new_dir_path): os.makedirs(new_dir_path)
+    return os.path.join(new_dir_path, f"{base_name}{extension}")
