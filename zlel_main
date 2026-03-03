@@ -1,55 +1,54 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-.. module:: zlel_main.py
-    :synopsis:
+.. module:: zlel_main
+    :synopsis: Programa nagusia. Moduluak inportatu eta simulazio prozesua kontrolatzen du.
 
-.. moduleauthor:: YOUR NAME AND E-MAIL
-
-
+.. moduleauthor:: Erik Elorduy eta Aitor Serrano
 """
 
 import sys
 import numpy as np
 import zlel.zlel_p1 as zl1
+import zlel.zlel_p2 as zl2
 
 if __name__ == "__main__":
-    # 1. Fitxategiaren izena lortu
+    # Parametrorik ez badago, adibide bat exekutatu
     if len(sys.argv) > 1:
         filename = sys.argv[1]
     else:
-        # ALDATU HAU: Zure .cir fitxategiaren bidea jarri hemen probatzeko
-        filename = "cirs/0_zlel_V_R_Q.cir"
-    
-    print(f"Reading file: {filename}")
+        # Probatzeko aldatu fitxategi hau nahi duzun .cir fitxategira
+        filename = "cirs/1_zlel_adibide_op.cir"
+        
+    print(f"Zirkuitua prozesatzen: {filename}")
 
-    # 2. Parseatu (datuak irakurri)
-    cir_el, cir_nd, cir_val, cir_ctr = zl1.cir_parser(filename)
+    # 1. Parsing
+    cir_el, cir_nd, cir_val, cir_ctr, analy = zl1.cir_parser(filename)
     
-    # 3. Topologia prozesatu (Adarrak sortu)
+    # 2. Topologia eraiki
     branches = zl1.topology_builder(cir_el, cir_nd)
+    all_nodes = sorted(list(set(cir_nd.flatten())))
+    Aa = zl1.build_incidence_matrix(branches, all_nodes)
     
-    # 4. Datuak prestatu 'print_cir_info' funtziorako
-    # Funtzio horrek formatu oso zehatza eskatzen du (numpy array-ak)
+    b = len(branches)
+    n = len(all_nodes)
     
-    # Adarren izenak array batean
-    branches_names = np.array([b['name'] for b in branches])
-    
-    # Adarren nodoak (From, To) matrize batean
-    branches_nodes = np.array([[b['n_from'], b['n_to']] for b in branches])
-    
-    # Nodo guztiak lortu eta ordenatu
-    all_nodes = set(cir_nd.flatten())
-    sorted_nodes = np.array(sorted(list(all_nodes)))
-    
-    b = len(branches)      # Adar kopurua
-    n = len(sorted_nodes)  # Nodo kopurua
-    el_num = len(cir_el)   # Elementu kopurua
-    
-    # 5. Emaitzak inprimatu (irakaslearen funtzioa erabiliz)
-    zl1.print_cir_info(branches_names, branches_nodes, b, n, sorted_nodes, el_num)
-    
-    # 6. Intzidentzia Matrizea kalkulatu eta erakutsi
-    Aa = zl1.build_incidence_matrix(branches, sorted_nodes)
-    print("\nIncidence Matrix (Aa):")
-    print(Aa)
+    # 3. Analisiak exekutatu
+    if analy['pr']:
+        br_names = np.array([br['name'] for br in branches])
+        br_nodes = np.array([[br['n_from'], br['n_to']] for br in branches])
+        zl1.print_cir_info(br_names, br_nodes, b, n, all_nodes, len(cir_el))
+
+    if analy['op']:
+        # M, N, Us lortu t=None erabiliz
+        M, N, Us = zl2.build_MNUs(cir_el, cir_val, cir_ctr, branches)
+        T = zl2.build_tableau(Aa, M, N)
+        sol = zl2.solve_tableau(T, Us, n-1)
+        zl2.print_solution(sol, b, n)
+
+    if analy['dc'] is not None:
+        start, end, step, source = analy['dc']
+        zl2.do_sweep(filename, 'dc', start, end, step, cir_el, cir_val, cir_ctr, branches, Aa, n, b, source)
+
+    if analy['tr'] is not None:
+        start, end, step = analy['tr']
+        zl2.do_sweep(filename, 'tr', start, end, step, cir_el, cir_val, cir_ctr, branches, Aa, n, b)
