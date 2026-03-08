@@ -7,14 +7,14 @@ and some integrity checks.
 .. moduleauthor:: Aitor Serrano Murua (aserrano052@ikasle.ehu.eus), Erik 
 Elorduy Bravo (eelorduy005@ikasle.ehu.eus)
 """
-
 import sys
 import numpy as np
 
 
 def cir_parser(filename):
     """
-    This function takes a .cir test circuit and parses it to 4 matrices.
+    This function takes a .cir test circuit and parses it to 4 matrices and a
+    dictionary. It separates circuit elements from simulation commands.
 
     Parameters
     ----------
@@ -31,6 +31,11 @@ def cir_parser(filename):
         Array of floats with the values of the elements. Size: (e, 3).
     cir_ctr : numpy.ndarray
         Array of strings with the control element names. Size: (e,).
+    cir_sim : dict
+        Dictionary containing the simulation commands and parameters. 
+        Keys are strings ('pr', 'op', 'dc', 'tr'). Values are booleans for 
+        'pr' and 'op', and nested dictionaries for 'dc' and 'tr' containing 
+        the sweep parameters (e.g., {'start': 0.0, 'end': 10.0, 'step': 0.1}).
     """
     try:
         data = np.genfromtxt(filename, dtype=str)
@@ -47,16 +52,57 @@ def cir_parser(filename):
                   "(non whitespace).")
             sys.exit(1)
 
-        cir_nd = data[:, 1:5].astype(int)
+        # Split elements and simulations using NumPy masks
+        sim_mask = np.char.startswith(data[:, 0], '.')
+
+        # Check if there is analysis info. Exit if not.
+        if not np.any(sim_mask):
+            sys.exit("ERROR: No analysis commands (.OP, .DC, etc.) found in "
+                     f"{filename}.")
+
+        elem_data = data[~sim_mask]  # Only the physical components
+        sim_data = data[sim_mask]    # Only the simulation commands
+
+        cir_nd = elem_data[:, 1:5].astype(int)
         if not np.any(cir_nd == 0):
             print("ERROR: The circuit does not have a reference node (0).")
             sys.exit(1)
 
-        cir_el = data[:, 0]
-        cir_val = data[:, 5:8].astype(float)
-        cir_ctr = data[:, 8]
+        cir_el = elem_data[:, 0]
+        if len(cir_el) != len(np.unique(cir_el)):
+            sys.exit("ERROR: There are duplicate element names in the circuit "
+                     "definition.")
 
-        return cir_el, cir_nd, cir_val, cir_ctr
+        cir_val = elem_data[:, 5:8].astype(float)
+        cir_ctr = elem_data[:, 8]
+
+        cir_sim = {}  # Save the simulation commands (sim_data)
+
+        for row in sim_data:
+            # Convert to lowercase to catch '.OP' or '.op'
+            cmd = row[0].lower()
+
+            if cmd == '.pr':
+                cir_sim['pr'] = True
+            elif cmd == '.op':
+                cir_sim['op'] = True
+            elif cmd == '.dc':
+                # Syntax: .DC 0 0 0 0 start end step source
+                cir_sim['dc'] = {
+                    'start': float(row[5]),
+                    'end': float(row[6]),
+                    'step': float(row[7]),
+                    'src': row[8]
+                }
+            elif cmd == '.tr':
+                # Syntax: .TR 0 0 0 0 start end step 0
+                cir_sim['tr'] = {
+                    'start': float(row[5]),
+                    'end': float(row[6]),
+                    'step': float(row[7])
+                }
+
+        return cir_el, cir_nd, cir_val, cir_ctr, cir_sim
 
     except OSError:
         print(f"ERROR: The file {filename} was not found.")
@@ -80,7 +126,7 @@ def get_nodes(cir_nd):
     return np.unique(cir_nd)
 
 
-def build_branches(cir_el, cir_nd):
+def build_branches(cir_el, cir_nd, cir_val, cir_ctr):
     """
     Expands the elements into branches for the digraph.
 
@@ -88,7 +134,7 @@ def build_branches(cir_el, cir_nd):
     ----------
     cir_el : numpy.ndarray
         Array of strings with the element names. Size: (e,)
-    cir_nd : TYPE
+    cir_nd : int
         Array of integers with the nodes of the circuit. Size: (e, 4)
 
     Returns
@@ -98,6 +144,12 @@ def build_branches(cir_el, cir_nd):
     br_nd : numpy.ndarray
         Array of integers with the branch nodes (positive and negative 
         terminals). Size: (b, 2).
+    br_val : numpy.ndarray
+        Array of floats containing the values associated with each branch. 
+        Copied directly from the parent element. Size: (b, 3).
+    br_ctr : numpy.ndarray
+        Array of strings with the control element names associated with 
+        each branch. Copied directly from the parent element. Size: (b,).
     b : int
         Total number of branches in the circuit.
     """
@@ -112,26 +164,34 @@ def build_branches(cir_el, cir_nd):
     # True counts as 1, False as 0 in np.sum
     b = np.sum(other_mask) + (2 * np.sum(q_mask)) + (2 * np.sum(a_mask))
 
-    # 3. Initialize fixed-size NumPy arrays (No Python lists!)
+    # 3. Initialize fixed-size NumPy arrays
     # '<U50': a string of up to 50 characters (needed to append '_be', etc.)
     br_el = np.empty(b, dtype='<U50')
     br_nd = np.empty((b, 2), dtype=int)
+    br_val = np.empty((b, 3), dtype=float)
+    br_ctr = np.empty(b, dtype='<U50')
 
     # 4. Fill the arrays based on the topology rules
     idx = 0
     for i in range(len(cir_el)):
         el = cir_el[i]
         nd = cir_nd[i]
+        val = cir_val[i]
+        ctr = cir_ctr[i]
 
         if q_mask[i]:
             # BJT rules: Nodes are defined as [Collector, Base, Emitter] ->
             # [nd[0], nd[1], nd[2]]
             br_el[idx] = el + "_be"
             br_nd[idx] = [nd[1], nd[2]]  # Base to Emitter
+            br_val[idx] = val
+            br_ctr[idx] = ctr
             idx += 1
 
             br_el[idx] = el + "_bc"
             br_nd[idx] = [nd[1], nd[0]]  # Base to Collector
+            br_val[idx] = val
+            br_ctr[idx] = ctr
             idx += 1
 
         elif a_mask[i]:
@@ -139,19 +199,25 @@ def build_branches(cir_el, cir_nd):
             # [nd[0], nd[1], nd[2], nd[3]]
             br_el[idx] = el + "_in"
             br_nd[idx] = [nd[0], nd[1]]  # N+ to N-
+            br_val[idx] = val
+            br_ctr[idx] = ctr
             idx += 1
 
             br_el[idx] = el + "_ou"
             br_nd[idx] = [nd[2], nd[3]]  # N_out to N_ref
+            br_val[idx] = val
+            br_ctr[idx] = ctr
             idx += 1
 
         else:
             # Standard 2-terminal components
             br_el[idx] = el
             br_nd[idx] = [nd[0], nd[1]]  # Positive to Negative
+            br_val[idx] = val
+            br_ctr[idx] = ctr
             idx += 1
 
-    return br_el, br_nd, b
+    return br_el, br_nd, br_val, br_ctr, b
 
 
 def build_incidence_matrix(br_nd, b, nodes, n):
@@ -196,7 +262,8 @@ def build_incidence_matrix(br_nd, b, nodes, n):
     Aa[idx_minus, col_idx] = -1
 
     # 4. Create the Reduced Incidence Matrix (A)
-    # Since our 'nodes' array is sorted, the reference node '0' is ALWAYS at row 0.
+    # Since our 'nodes' array is sorted, the reference node '0' is ALWAYS at
+    # row 0.
     # We slice the matrix to keep everything from row 1 to the end.
     A = Aa[1:, :]
 
@@ -226,18 +293,21 @@ def check_circuit_errors(Aa, br_el, cir_el, cir_val, nodes):
     # 1. Do all branches connect exactly 2 nodes?
     if not np.sum(Aa) == 0:
         sys.exit("ERROR: Fatal Matrix Error. A branch does not connect exactly"
-                 "two nodes.")
+                 " two nodes.")
 
     # 2. Floating nodes
     connections_per_node = np.sum(np.abs(Aa), axis=1)
     if np.any(connections_per_node == 1):
-        sys.exit(
-            "ERROR: The ciruit has a node(s) with a single connection (floating nodes).")
+        sys.exit("ERROR: The ciruit has a node(s) with a single connection "
+                 "(floating nodes).")
 
     # 3. Parallel voltage sources
     # Find all branches starting with 'V' or 'E'
-    v_mask = np.char.startswith(np.char.lower(
-        br_el), 'v') | np.char.startswith(np.char.lower(br_el), 'e')
+    br_lower = np.char.lower(br_el)
+    v_mask = (np.char.startswith(br_lower, 'v') |
+              np.char.startswith(br_lower, 'e') |
+              np.char.startswith(br_lower, 'h') |
+              np.char.startswith(br_lower, 'b'))
     # Gets the column numbers for the voltage sources
     v_indices = np.flatnonzero(v_mask)
 
@@ -248,11 +318,13 @@ def check_circuit_errors(Aa, br_el, cir_el, cir_val, nodes):
         # Calculate the correlation matrix: V^T * V
         correlation_matrix = np.dot(Aa_v.T, Aa_v)
 
-        # Set the diagonal to 0 (so a source isn't flagged as parallel with itself!)
+        # Set the diagonal to 0 (so a source isn't flagged as parallel with
+        # itself!)
         np.fill_diagonal(correlation_matrix, 0)
 
         # Find where the dot product is 2 (parallel) or -2 (anti-parallel)
-        # np.argwhere gives us a list of [row, col] pairs where the value is 2 or -2
+        # np.argwhere gives us a list of [row, col] pairs where the value is 2
+        # or -2
         pairs = np.argwhere(np.abs(correlation_matrix) == 2)
 
         # If any pairs were found, we have parallel sources
@@ -266,17 +338,19 @@ def check_circuit_errors(Aa, br_el, cir_el, cir_val, nodes):
             val1 = cir_val[cir_el == br_el[br1]][0, 0]
             val2 = cir_val[cir_el == br_el[br2]][0, 0]
 
-            # If they are connected backwards (-2), flip val2 to compare them fairly
+            # If they are connected backwards (-2), flip val2 to compare them
+            # fairly
             if correlation_matrix[idx1, idx2] == -2:
                 val2 = -val2
 
             if val1 != val2:
-                sys.exit("ERROR: The voltage sources are in parallel with "
-                         f"different values. ({br_el[br1]} eta {br_el[br2]})")
+                sys.exit(f"Parallel V sources at branches {br1} and {br2}.")
 
     # 3. SERIES CURRENT SOURCES
-    i_mask = np.char.startswith(np.char.lower(
-        br_el), 'i') | np.char.startswith(np.char.lower(br_el), 'g')
+    i_mask = (np.char.startswith(br_lower, 'i') |
+              np.char.startswith(br_lower, 'g') |
+              np.char.startswith(br_lower, 'f') |
+              np.char.startswith(br_lower, 'y'))
     i_indices = np.flatnonzero(i_mask)
 
     for node_idx in range(Aa.shape[0]):
@@ -295,12 +369,115 @@ def check_circuit_errors(Aa, br_el, cir_el, cir_val, nodes):
                     offending_sources.append(br_el[idx])
 
             if kcl_sum != 0:
-                # node_idx is the matrix row. nodes[node_idx] gives the physical node number!
+                # node_idx is the matrix row. nodes[node_idx] gives the
+                # physical node number!
                 bad_node = nodes[node_idx]
                 sources_str = ", ".join(offending_sources)
 
                 sys.exit("ERROR: Current sources in series violate KCL at "
                          f"Node {bad_node}. Offending sources: {sources_str}")
+
+
+def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False):
+    """
+    Builds the Branch Constitutive Equation (BCE) matrices: M, N, and Us.
+    Equation format: M*v + N*i = Us
+
+    Parameters
+    ----------
+    br_el : numpy.ndarray
+        Array of strings with the expanded branch names. Size: (b,).
+    br_val : numpy.ndarray
+        Array of floats containing the values for each branch. Size: (b, 3).
+    br_ctr : numpy.ndarray
+        Array of strings with the control element names for each branch. Size: 
+        (b,).
+    b : int
+        Total number of branches in the circuit.
+    t : float, optional
+        The current time step for transient analysis. Used to calculate the 
+        instantaneous value of sinusoidal sources. The default is 0.0.
+    is_op : boolean
+        Flag to check if we are doing an .op analysis.    
+
+    Returns
+    -------
+    M : numpy.ndarray
+        BCE Voltage matrix representing the voltage coefficients. Size: (b, b).
+    N : numpy.ndarray
+        BCE Current matrix representing the current coefficients. Size: (b, b).
+    Us : numpy.ndarray
+        BCE Source vector representing the independent source values. Size: 
+        (b, 1).
+
+    """
+
+    # Initialize empty matrices with floats
+    M = np.zeros((b, b), dtype=float)
+    N = np.zeros((b, b), dtype=float)
+    Us = np.zeros((b, 1), dtype=float)
+
+    for i in range(b):
+        branch_name = br_el[i]
+        val = br_val[i]
+        ctr = br_ctr[i]
+
+        type_letter = branch_name[0].upper()
+
+        # --- RESISTORS ---
+        if type_letter == 'R':
+            M[i, i] = 1.0
+            N[i, i] = -val[0]
+
+        # --- INDEPENDENT VOLTAGE SOURCES ---
+        elif type_letter in ['V', 'B']:
+            M[i, i] = 1.0
+            if type_letter == 'V' or is_op:
+                Us[i, 0] = val[0]
+            else:
+                # B_xx (Sinusoidal Voltage)
+                Us[i, 0] = val[0] * np.sin(2 * np.pi * val[1] * t +
+                                           (np.pi / 180.0) * val[2])
+
+        # --- INDEPENDENT CURRENT SOURCES ---
+        elif type_letter in ['I', 'Y']:
+            N[i, i] = 1.0
+            if type_letter == 'I' or is_op:
+                Us[i, 0] = val[0]
+            else:
+                # Y_xx (Sinusoidal Current)
+                Us[i, 0] = val[0] * \
+                    np.sin(2 * np.pi * val[1] * t + (np.pi / 180.0) * val[2])
+
+        # --- CONTROLLED SOURCES (E, H, G, F) ---
+        elif type_letter in ['E', 'H', 'G', 'F']:
+            # Find the row index of the controlling branch instantly
+            ctrl_idx = np.where(np.char.lower(br_el) == str(ctr).lower())[0][0]
+
+            if type_letter == 'E':    # VCVS
+                M[i, i] = 1.0
+                M[i, ctrl_idx] = -val[0]
+            elif type_letter == 'H':  # CCVS
+                M[i, i] = 1.0
+                N[i, ctrl_idx] = -val[0]
+            elif type_letter == 'G':  # VCCS
+                N[i, i] = 1.0
+                M[i, ctrl_idx] = -val[0]
+            elif type_letter == 'F':  # CCCS
+                N[i, i] = 1.0
+                N[i, ctrl_idx] = -val[0]
+
+        # --- IDEAL OP-AMPS ---
+        elif type_letter == 'A':
+            if branch_name.endswith("_in"):
+                M[i, i] = 1.0  # v_in = 0
+            elif branch_name.endswith("_ou"):
+                # Force the input current to be 0 using the output branch's equation row
+                in_branch_name = branch_name[:-3] + "_in"
+                in_idx = np.where(br_el == in_branch_name)[0][0]
+                N[i, in_idx] = 1.0  # i_in = 0
+
+    return M, N, Us
 
 
 def print_cir_info(cir_el, cir_nd, b, n, nodes, el_num):
@@ -358,3 +535,4 @@ def print_cir_info(cir_el, cir_nd, b, n, nodes, el_num):
     print("v"+str(b))
 
     # IT IS RECOMMENDED TO USE THIS FUNCTION WITH NO MODIFICATION.
+
