@@ -16,27 +16,43 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         filename = sys.argv[1]
     else:
-        # Probatzeko aldatu fitxategi hau nahi duzun .cir fitxategira
+        # Probatzeko aldatu fitxategi hau nahi den .cir fitxategira
         filename = "cirs/1_zlel_adibide_op.cir"
         
-    print(f"Zirkuitua prozesatzen: {filename}")
 
     # 1. Parsing
     cir_el, cir_nd, cir_val, cir_ctr, analy = zl1.cir_parser(filename)
     
     # 2. Topologia eraiki
     branches = zl1.topology_builder(cir_el, cir_nd)
-    all_nodes = sorted(list(set(cir_nd.flatten())))
+    # Numpy array formatua eman (inprimatzean komarik ez izateko)
+    all_nodes = np.array(sorted([int(x) for x in set(cir_nd.flatten())]))
     Aa = zl1.build_incidence_matrix(branches, all_nodes)
     
     b = len(branches)
     n = len(all_nodes)
+    
+    # --- TENTSIO ITURRI PARALELOEN EGIAZTAPENA ---
+    v_sources = []
+    for i, br in enumerate(branches):
+        # Tentsio iturriak bakarrik gorde (V, B, E edo H)
+        if br['name'].upper().startswith(('V', 'B', 'E', 'H')):
+            v_sources.append((i, {br['n_from'], br['n_to']}))
+            
+    for i in range(len(v_sources)):
+        for j in range(i+1, len(v_sources)):
+            if v_sources[i][1] == v_sources[j][1]: # Nodo berdinak partekatzen badituzte
+                print(f"Parallel V sources at branches {v_sources[i][0]} and {v_sources[j][0]}.")
+                sys.exit(1)
+    # ----------------------------------------------
     
     # 3. Analisiak exekutatu
     if analy['pr']:
         br_names = np.array([br['name'] for br in branches])
         br_nodes = np.array([[br['n_from'], br['n_to']] for br in branches])
         zl1.print_cir_info(br_names, br_nodes, b, n, all_nodes, len(cir_el))
+        print("\nIncidence Matrix: ")
+        print(Aa)
 
     if analy['op']:
         # M, N, Us lortu t=None erabiliz
