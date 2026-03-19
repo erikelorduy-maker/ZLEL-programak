@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+.. module:: zlel_p3.py
+    :synopsis: Osagai ez-linealen ebazpena Newton-Raphson bidez.
+
+.. moduleauthor:: Erik Elorduy eta Aitor Serrano
+"""
+
+import numpy as np
+import sys
+
+if __name__ == "zlel.zlel_p3":
+    import zlel.zlel_p1 as zl1
+    import zlel.zlel_p2 as zl2
+else:
+    import zlel_p1 as zl1
+    import zlel_p2 as zl2
+
+
+def diode_NR(I0, nD, Vdj):
+    """ Diodoaren g eta I kalkulatzen ditu """
+    Vt = 8.6173324e-5 * 300 * nD
+    exp_val = np.exp(Vdj / Vt)
+
+    gd = -(I0 / Vt) * exp_val
+    Id = I0 * (exp_val - 1) + gd * Vdj
+
+    return gd, Id
+
+def q_NR(Ies, Ics, bf, br, Vbe, Vbc):
+    """
+    Transistore Bipolarraren (Ebers-Moll) matrize elementuak kalkulatzen ditu.
+    diode_NR funtzioa berrerabiltzen dugu irakaslearen doitasun bera lortzeko.
+    """
+    # Alfa parametroak kalkulatu
+    af = bf / (bf + 1.0) if bf > 0 else 0.0
+    ar = br / (br + 1.0) if br > 0 else 0.0
+    
+    # Ebers-Moll ereduaren barruko bi diodoak ebaluatu (idealtasun faktorea nD=1.0)
+    g_be, I_be_eq = diode_NR(Ies, 1.0, Vbe)
+    g_bc, I_bc_eq = diode_NR(Ics, 1.0, Vbc)
+    
+    # Matrizeen elementuak (Malda konduktantziak)
+    m11 = g_be
+    m12 = -ar * g_bc
+    m21 = -af * g_be
+    m22 = g_bc
+    
+    # Korronte aske baliokideak (Us)
+    Us_be = I_be_eq - ar * I_bc_eq
+    Us_bc = -af * I_be_eq + I_bc_eq
+    
+    return m11, m12, m21, m22, Us_be, Us_bc
+
+def solve_nl_circuit(cir_el, cir_nd, cir_val, cir_ctr, branches, Aa, n, b, sweep_el=None, sweep_val=None, t=None):
+    """
+    Zirkuitu ez-linealak ebazteko Newton-Raphson begizta nagusia.
+    """
+    br_map = {br['name'].upper(): i for i, br in enumerate(branches)}
+    
+    # 1. Hasierako tentsioak (0.6V elementu ez-linealentzat hasten gara)
+    v_prev = np.zeros(b)
+    for i, el_name in enumerate(cir_el):
+        el_type = el_name[0].upper()
+        if el_type == 'D':
+            v_prev[br_map[el_name.upper()]] = 0.6
+        elif el_type == 'Q':
+            v_prev[br_map[el_name.upper() + "_BE"]] = 0.6
+            v_prev[br_map[el_name.upper() + "_BC"]] = 0.6
+
+    max_iter = 100
+    tol = 1e-5
+
+    # 2. Newton-Raphson iterazioak
+    for it in range(max_iter):
+        M, N, Us = zl2.build_MNUs(cir_el, cir_val, cir_ctr, branches, sweep_el=sweep_el, sweep_val=sweep_val, t=t)
+        
+        # Ez-lineala den zatia gainidatzi iterazio honetako tentsioekin
+        for i, el_name in enumerate(cir_el):
+            el_type = el_name[0].upper()
+            
+            if el_type == 'D':
+                j = br_map[el_name.upper()]
+                I0, nD = cir_val[i][0], cir_val[i][1]
+                Vdj = v_prev[j]
+                
+                gd, Id = diode_NR(I0, nD, Vdj)
+                
+                N[j, j] = 1.0
+                M[j, j] = gd
+                Us[j, 0] = Id
+                
+            elif el_type == 'Q':
+                j_be = br_map[el_name.upper() + "_BE"]
+                j_bc = br_map[el_name.upper() + "_BC"]
+                
+                Ies, Ics, bf, br = cir_val[i][0:4]
+                Vbe = v_prev[j_be]
+                Vbc = v_prev[j_bc]
+                
+                # Af eta Ar kalkulatu (if gabe, zuzenean)
+                af = bf / (bf + 1.0)
+                ar = br / (br + 1.0)
+                
+                g_be, I_be_eq = diode_NR(Ies, 1.0, Vbe)
+                g_bc, I_bc_eq = diode_NR(Ics, 1.0, Vbc)
+                
+                # Base-Emitter adarra
+                N[j_be, j_be] = 1.0
+                M[j_be, j_be] = g_be
+                M[j_be, j_bc] = -ar * g_bc
+                Us[j_be, 0] = I_be_eq - ar * I_bc_eq
+                
+                # Base-Collector adarra
+                N[j_bc, j_bc] = 1.0
+                M[j_bc, j_be] = -af * g_be
+                M[j_bc, j_bc] = g_bc
+                Us[j_bc, 0] = -af * I_be_eq + I_bc_eq
+
+        # Sistema ebatzi
+        T = zl2.build_tableau(Aa, M, N)
+        sol = zl2.solve_tableau(T, Us, n-1)
+        
+        # Tentsio berriak atera
+        v_new = np.zeros(b)
+        for j in range(b):
+            v_new[j] = sol[n - 1 + j, 0]
+            
+        # 3. Konbergentzia egiaztatu (Tentsio aldaketa maximoa)
+        if np.max(np.abs(v_new - v_prev)) < tol:
+            return sol
+            
+        v_prev = v_new.copy()
+        
+    print("Errorea: Newton-Raphson metodoak ez du konbergentziarik lortu.")
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+    else:
+        filename = "../cirs/all/2_zlel_1D.cir"
