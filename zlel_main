@@ -10,6 +10,7 @@ import sys
 import numpy as np
 import zlel.zlel_p1 as zl1
 import zlel.zlel_p2 as zl2
+import zlel.zlel_p3 as zl3
 
 if __name__ == "__main__":
     # Parametrorik ez badago, adibide bat exekutatu
@@ -55,10 +56,16 @@ if __name__ == "__main__":
         print(Aa)
 
     if analy['op']:
-        # M, N, Us lortu t=None erabiliz
-        M, N, Us = zl2.build_MNUs(cir_el, cir_val, cir_ctr, branches)
-        T = zl2.build_tableau(Aa, M, N)
-        sol = zl2.solve_tableau(T, Us, n-1)
+        # Begiratu ea elementu ez-linealik badagoen
+        has_nl = any(el[0].upper() in ['D', 'Q'] for el in cir_el)
+        
+        if has_nl:
+            sol = zl3.solve_nl_circuit(cir_el, cir_nd, cir_val, cir_ctr, branches, Aa, n, b)
+        else:
+            M, N, Us = zl2.build_MNUs(cir_el, cir_val, cir_ctr, branches)
+            T = zl2.build_tableau(Aa, M, N)
+            sol = zl2.solve_tableau(T, Us, n-1)
+            
         zl2.print_solution(sol, b, n)
 
     if analy['dc'] is not None:
