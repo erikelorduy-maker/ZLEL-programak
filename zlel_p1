@@ -61,7 +61,11 @@ def cir_parser(filename):
         
         if el_type in ['Q']: 
             row_nd = parts[1:4] + ['0']
-            vals = parts[4:]
+            vals = parts[5:9]  # Ies, Ics, bf, br
+            ctr = '0'
+        elif el_type in ['D']:
+            row_nd = parts[1:3] + ['0', '0']
+            vals = parts[5:7]  # I0, nD
             ctr = '0'
         elif el_type in ['A']:
             row_nd = parts[1:5]
@@ -69,11 +73,11 @@ def cir_parser(filename):
             ctr = '0'
         elif el_type in ['E', 'G', 'H', 'F']:
             row_nd = parts[1:3] + ['0', '0']
-            vals = [parts[5]] # 3,4 indexak 0 dira sintaxian
+            vals = [parts[5]]  # 3,4 indexak 0 dira sintaxian
             ctr = parts[8]
         elif el_type in ['B', 'Y']:
             row_nd = parts[1:3] + ['0', '0']
-            vals = parts[5:8] # anp, maiz, fasea
+            vals = parts[5:8]  # anp, maiz, fasea
             ctr = '0'
         else: # R, V, I...
             row_nd = parts[1:3] + ['0', '0']
