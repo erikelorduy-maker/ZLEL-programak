@@ -19,7 +19,21 @@ else:
 
 
 def diode_NR(I0, nD, Vdj):
-    """ Diodoaren g eta I kalkulatzen ditu """
+    """
+    Diodo baten ekuazio esponentziala linealizatzen du puntu zehatz batean, 
+    Newton-Raphson metodoaren baliokide diskretua sortuz.
+    
+
+    Args:
+        I0 (float): Diodoaren saturazio-korrontea.
+        nD (float): Diodoaren idealtasun-faktorea.
+        Vdj (float): Diodoak aurreko iterazioan zeukan tentsioa (Vd).
+
+    Returns:
+        tuple: (gd, Id)
+            - gd (float): Baliokide diskretuaren konduktantzia (ukitzailearen malda).
+            - Id (float): Baliokide diskretuaren korronte-iturri askea.
+    """
     Vt = 8.6173324e-5 * 300 * nD
     exp_val = np.exp(Vdj / Vt)
 
@@ -30,8 +44,24 @@ def diode_NR(I0, nD, Vdj):
 
 def q_NR(Ies, Ics, bf, br, Vbe, Vbc):
     """
-    Transistore Bipolarraren (Ebers-Moll) matrize elementuak kalkulatzen ditu.
-    diode_NR funtzioa berrerabiltzen dugu irakaslearen doitasun bera lortzeko.
+    Transistore Bipolar (BJT) baten elementu linealak kalkulatzen ditu 
+    Ebers-Moll eredua erabiliz. 
+
+    Base-Igorle (BE) eta Base-Kolektore (BC) loturak bi diodo bezala tratatzen ditu, 
+    euren arteko irabazi gurutzatuak (alpha_F eta alpha_R) kontuan hartuz.
+
+    Args:
+        Ies (float): Igorlearen saturazio-korrontea.
+        Ics (float): Kolektorearen saturazio-korrontea.
+        bf (float): Aurreranzko korronte-irabazia (beta_F).
+        br (float): Atzeranzko korronte-irabazia (beta_R).
+        Vbe (float): Base-Igorle tentsioa, aurreko iteraziotik.
+        Vbc (float): Base-Kolektore tentsioa, aurreko iteraziotik.
+
+    Returns:
+        tuple: (m11, m12, m21, m22, Us_be, Us_bc)
+            - m11, m12, m21, m22 (float): Konduktantzia-matrizearen elementuak.
+            - Us_be, Us_bc (float): Eredu linealizatuaren korronte-iturri askeak.
     """
     # Alfa parametroak kalkulatu
     af = bf / (bf + 1.0) if bf > 0 else 0.0
@@ -55,7 +85,28 @@ def q_NR(Ies, Ics, bf, br, Vbe, Vbc):
 
 def solve_nl_circuit(cir_el, cir_nd, cir_val, cir_ctr, branches, Aa, n, b, sweep_el=None, sweep_val=None, t=None):
     """
-    Zirkuitu ez-linealak ebazteko Newton-Raphson begizta nagusia.
+    Osagai ez-linealak (Diodoak eta Transistoreak) dituzten zirkuituak ebazteko 
+    Newton-Raphson iterazio-begizta nagusia.
+
+    Sistema hasierako asmakizun batekin hasten da (0.6V) eta iterazio bakoitzean 
+    Tableau matrizea eguneratzen du osagaien baliokide linealak erabiliz. 
+    Tentsioen aldaketa tolerantzia baino txikiagoa denean gelditzen da.
+
+    Args:
+        cir_el (numpy.ndarray): Elementuen izenak.
+        cir_nd (numpy.ndarray): Nodoen matrizea.
+        cir_val (numpy.ndarray): Elementuen balioak.
+        cir_ctr (numpy.ndarray): Kontrol elementuak.
+        branches (list): Adarren hiztegien zerrenda.
+        Aa (numpy.ndarray): Intzidentzia matrizea.
+        n (int): Nodo kopurua.
+        b (int): Adar kopurua.
+        sweep_el (str, optional): Ekorketa egiten ari den elementuaren izena (.DC).
+        sweep_val (float, optional): Ekorketaren uneko balioa.
+        t (float, optional): Denbora balioa (.TR).
+
+    Returns:
+        numpy.ndarray: Zirkuituaren azken tentsio eta korronteen bektorea (sol).
     """
     br_map = {br['name'].upper(): i for i, br in enumerate(branches)}
     
@@ -74,6 +125,7 @@ def solve_nl_circuit(cir_el, cir_nd, cir_val, cir_ctr, branches, Aa, n, b, sweep
 
     # 2. Newton-Raphson iterazioak
     for it in range(max_iter):
+        # Lineala den zatia eraiki
         M, N, Us = zl2.build_MNUs(cir_el, cir_val, cir_ctr, branches, sweep_el=sweep_el, sweep_val=sweep_val, t=t)
         
         # Ez-lineala den zatia gainidatzi iterazio honetako tentsioekin
@@ -99,24 +151,20 @@ def solve_nl_circuit(cir_el, cir_nd, cir_val, cir_ctr, branches, Aa, n, b, sweep
                 Vbe = v_prev[j_be]
                 Vbc = v_prev[j_bc]
                 
-                # Af eta Ar kalkulatu (if gabe, zuzenean)
-                af = bf / (bf + 1.0)
-                ar = br / (br + 1.0)
-                
-                g_be, I_be_eq = diode_NR(Ies, 1.0, Vbe)
-                g_bc, I_bc_eq = diode_NR(Ics, 1.0, Vbc)
+                # Matrizeen osagaiak kalkulatu
+                m11, m12, m21, m22, Us_be, Us_bc = q_NR(Ies, Ics, bf, br, Vbe, Vbc)
                 
                 # Base-Emitter adarra
                 N[j_be, j_be] = 1.0
-                M[j_be, j_be] = g_be
-                M[j_be, j_bc] = -ar * g_bc
-                Us[j_be, 0] = I_be_eq - ar * I_bc_eq
+                M[j_be, j_be] = m11
+                M[j_be, j_bc] = m12
+                Us[j_be, 0] = Us_be
                 
                 # Base-Collector adarra
                 N[j_bc, j_bc] = 1.0
-                M[j_bc, j_be] = -af * g_be
-                M[j_bc, j_bc] = g_bc
-                Us[j_bc, 0] = -af * I_be_eq + I_bc_eq
+                M[j_bc, j_be] = m21
+                M[j_bc, j_bc] = m22
+                Us[j_bc, 0] = Us_bc
 
         # Sistema ebatzi
         T = zl2.build_tableau(Aa, M, N)
