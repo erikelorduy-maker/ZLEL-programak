@@ -139,24 +139,37 @@ def do_sweep(filename, sim_type, start, end, step, cir_el, cir_val, cir_ctr, bra
     """
     DC edo TR ekorketa bat burutzen du eta emaitzak CSV batean gordetzen ditu.
     """
+    import zlel.zlel_p3 as zl3  # Hemen inportatzen dugu dependentzia zirkularra ekiditeko
+    
     ext = ".dc" if sim_type == 'dc' else ".tr"
     out_file = save_sim_output(filename, "sims", ext)
     
     header_start = source.upper() if sim_type == 'dc' else "t"
     header = build_csv_header(header_start, b, n)
     
+    # Begiratu ea elementu ez-linealik badagoen
+    has_nl = any(el[0].upper() in ['D', 'Q'] for el in cir_el)
+    
     with open(out_file, 'w') as f:
         f.write(header + "\n")
         
         # Ekorketa begizta
         for val in np.arange(start, end + step/2, step):
-            if sim_type == 'dc':
-                M, N, Us = build_MNUs(cir_el, cir_val, cir_ctr, branches, sweep_el=source, sweep_val=val)
-            else: # tr
-                M, N, Us = build_MNUs(cir_el, cir_val, cir_ctr, branches, t=val)
-                
-            T = build_tableau(Aa, M, N)
-            sol = solve_tableau(T, Us, n-1)
+            if has_nl:
+                # Zirkuitu ez-lineala Newton-Raphson bidez ebatzi
+                if sim_type == 'dc':
+                    sol = zl3.solve_nl_circuit(cir_el, None, cir_val, cir_ctr, branches, Aa, n, b, sweep_el=source, sweep_val=val)
+                else:
+                    sol = zl3.solve_nl_circuit(cir_el, None, cir_val, cir_ctr, branches, Aa, n, b, t=val)
+            else:
+                # Zirkuitu lineala modu arruntean ebatzi
+                if sim_type == 'dc':
+                    M, N, Us = build_MNUs(cir_el, cir_val, cir_ctr, branches, sweep_el=source, sweep_val=val)
+                else: # tr
+                    M, N, Us = build_MNUs(cir_el, cir_val, cir_ctr, branches, t=val)
+                    
+                T = build_tableau(Aa, M, N)
+                sol = solve_tableau(T, Us, n-1)
             
             # Formatu zehatza CSVrako
             sol_flat = [val] + [float(s[0]) for s in sol]
