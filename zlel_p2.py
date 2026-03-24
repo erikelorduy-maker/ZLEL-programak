@@ -75,7 +75,7 @@ def build_tableau(A, M, N, Us, b, n):
     return T, U
 
 
-def simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
+def simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A, has_nl):
     """
     Performs Transient (.TR) analysis and saves to CSV. 
 
@@ -97,6 +97,9 @@ def simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
         Total number of unique nodes.
     A : numpy.ndarray
         Reduced incidence matrix. Size: (n-1, b).
+    has_nl : boolean
+        Flag to know if there are non-linear elements in the circuit (True if 
+        there are)
 
     Returns
     -------
@@ -117,18 +120,23 @@ def simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
         # We use np.arange with a tiny buffer on 'end' to ensure the final step is included
         t = start
         while t <= end + (step / 10.0):
-            # 1. Get physics matrices for this EXACT moment in time
-            M, N, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=t)
+            if has_nl:
+                import zlel.zlel_p3 as zl3
+                sol = zl3.solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t)
+            else:
+                # 1. Get physics matrices for this EXACT moment in time
+                M, N, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=t)
 
-            # 2. Build and solve Tableau
-            T, U = build_tableau(A, M, N, Us, b, n)
-            try:
-                sol = np.linalg.solve(T, U)
-            except np.linalg.LinAlgError:
-                sys.exit("Error solving Tableau equation!")
+                # 2. Build and solve Tableau
+                T, U = build_tableau(A, M, N, Us, b, n)
+                try:
+                    sol = np.linalg.solve(T, U)
+                except np.linalg.LinAlgError:
+                    sys.exit("Error solving Tableau equation!")
 
-            # 3. Flatten solution and insert the current time 't' at the beginning
-            # sol.flatten() turns a column vector like [[1], [2]] into [1, 2]
+            # 3. Flatten solution and insert the current time 't' at the
+            # beginning sol.flatten() turns a column vector like [[1], [2]]
+            # into [1, 2]
             sol_flat = sol.flatten()
             csv_row = np.concatenate(([t, 0.0], sol_flat))
 
@@ -139,7 +147,7 @@ def simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
             t = round(t + step, 10)  # Round to prevent floating point drift
 
 
-def simulate_dc(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
+def simulate_dc(cir_sim, filename, br_el, br_val, br_ctr, b, n, A, has_nl):
     """
     Performs DC Sweep (.DC) analysis and saves to CSV.
 
@@ -161,6 +169,9 @@ def simulate_dc(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
         Total number of unique nodes.
     A : numpy.ndarray
         Reduced incidence matrix. Size: (n-1, b).
+    has_nl : boolean
+        Flag to know if there are non-linear elements in the circuit (True if 
+        there are)
 
     Returns
     -------
@@ -172,12 +183,16 @@ def simulate_dc(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
     step = cir_sim['dc']['step']
     src_name = cir_sim['dc']['src']
 
-    # Find the source in the branches array
-    if src_name not in br_el:
-        sys.exit(f"ERROR: .DC source '{
-                 src_name}' not found in circuit branches.")
+    # Find the source in the branches array (case-insensitive)
+    br_lower = np.char.lower(br_el)
+    src_name_lower = src_name.lower()
 
-    src_idx = np.where(br_el == src_name)[0][0]
+    # Find the source in the branches array
+    if src_name_lower not in br_lower:
+        sys.exit(f"ERROR: .DC source '{src_name}' not found in circuit "
+                 "branches.")
+
+    src_idx = np.where(br_lower == src_name_lower)[0][0]
 
     # Determine header letter (V or I) based on source type
     tvi = 'V' if src_name[0].upper() in ['V', 'B', 'E', 'H'] else 'I'
@@ -198,13 +213,18 @@ def simulate_dc(cir_sim, filename, br_el, br_val, br_ctr, b, n, A):
             br_val[src_idx][0] = sweep_val
 
             # 2. Build and solve (t=0 since it's DC)
-            M, N, Us = zl1.build_bce(
-                br_el, br_val, br_ctr, b, t=0.0, is_op=True)
-            T, U = build_tableau(A, M, N, Us, b, n)
-            try:
-                sol = np.linalg.solve(T, U)
-            except np.linalg.LinAlgError:
-                sys.exit("Error solving Tableau equation!")
+            if has_nl:
+                import zlel.zlel_p3 as zl3
+                sol = zl3.solve_nl_circuit(br_el, br_val, br_ctr, b, n, A,
+                                           t=0.0, is_op=True)
+            else:
+                M, N, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=0.0,
+                                         is_op=True)
+                T, U = build_tableau(A, M, N, Us, b, n)
+                try:
+                    sol = np.linalg.solve(T, U)
+                except np.linalg.LinAlgError:
+                    sys.exit("Error solving Tableau equation!")
 
             # 3. Format and write
             sol_flat = sol.flatten()
