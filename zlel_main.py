@@ -39,36 +39,51 @@ if __name__ == "__main__":
     # Check for errors
     zl1.check_circuit_errors(Aa, br_el, cir_el, cir_val, nodes)
 
+    # Check if there are any non-linear elements (Diodes or BJTs)
+    br_upper = np.char.upper(br_el)
+    has_nl = np.any(np.char.startswith(br_upper, 'D') |
+                    np.char.startswith(br_upper, 'Q'))
+
     # --- .PR Analysis (Print Circuit Info) ---
     if 'pr' in cir_sim:
-        zl1.print_cir_info(cir_el, cir_nd, b, n, nodes, el_num)
+        zl1.print_cir_info(br_el, br_nd, b, n, nodes, el_num)
         print("\nIncidence Matrix: ")
         print(Aa)
 
     # --- .OP Analysis (Operating Point) ---
     if 'op' in cir_sim:
-        # 1. Build the BCE physics matrices (M, N, Us). We use t=0.0 for DC.
-        M, N, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=True)
+        if has_nl:
+            import zlel.zlel_p3 as zl3
+            solution = zl3.solve_nl_circuit(br_el, br_val, br_ctr, b, n, A,
+                                            t=0.0, is_op=True)
+        else:
+            # 1. Build the BCE physics matrices (M, N, Us). We use t=0.0 for
+            # DC.
+            M, N, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=0.0,
+                                     is_op=True)
 
-        # 2. Assemble the massive Tableau system (T * x = U)
-        T, U = zl2.build_tableau(A, M, N, Us, b, n)
+            # 2. Assemble the massive Tableau system (T * x = U)
+            T, U = zl2.build_tableau(A, M, N, Us, b, n)
 
-        # 3. Solve the linear system instantly
-        try:
-            solution = np.linalg.solve(T, U)
-        except np.linalg.LinAlgError:
-            sys.exit("Error solving Tableau equations, check if det(T) != 0.")
+            # 3. Solve the linear system instantly
+            try:
+                solution = np.linalg.solve(T, U)
+            except np.linalg.LinAlgError:
+                sys.exit("Error solving Tableau equations, check if det(T) != "
+                         "0.")
 
         # 4. Print the formatted solution using the professor's template
         zl2.print_solution(solution, b, n)
 
     # --- .DC Analysis (DC Sweep) ---
     if 'dc' in cir_sim:
-        zl2.simulate_dc(cir_sim, filename, br_el, br_val, br_ctr, b, n, A)
+        zl2.simulate_dc(cir_sim, filename, br_el, br_val, br_ctr, b, n, A,
+                        has_nl)
 
     # --- .TR Analysis (Transient Sweep) ---
     if 'tr' in cir_sim:
-        zl2.simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A)
+        zl2.simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A,
+                        has_nl)
 
 
 """
@@ -76,4 +91,5 @@ https://stackoverflow.com/questions/419163/what-does-if-name-main-do
 https://stackoverflow.com/questions/19747371/
 python-exit-commands-why-so-many-and-when-should-each-be-used
 """
+
 
