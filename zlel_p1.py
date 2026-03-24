@@ -378,9 +378,10 @@ def check_circuit_errors(Aa, br_el, cir_el, cir_val, nodes):
                          f"Node {bad_node}. Offending sources: {sources_str}")
 
 
-def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False):
+def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False, v_j=None):
     """
-    Builds the Branch Constitutive Equation (BCE) matrices: M, N, and Us.
+    Builds the Branch Constitutive Equation (BCE) matrices: M, N, and Us. It
+    can handle non-linear elements using Newton-Raphson.
     Equation format: M*v + N*i = Us
 
     Parameters
@@ -397,8 +398,11 @@ def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False):
     t : float, optional
         The current time step for transient analysis. Used to calculate the 
         instantaneous value of sinusoidal sources. The default is 0.0.
-    is_op : boolean
-        Flag to check if we are doing an .op analysis.    
+    is_op : boolean, optional
+        Flag to check if we are doing an .op analysis.
+    v_j : numpy.ndarray, optional
+        Array of branch voltages at the current NR iteration. Defaults to
+        None.
 
     Returns
     -------
@@ -472,10 +476,58 @@ def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False):
             if branch_name.endswith("_in"):
                 M[i, i] = 1.0  # v_in = 0
             elif branch_name.endswith("_ou"):
-                # Force the input current to be 0 using the output branch's equation row
-                in_branch_name = branch_name[:-3] + "_in"
-                in_idx = np.where(br_el == in_branch_name)[0][0]
+                # Force the input current to be 0 using the output branch's
+                # equation row
+                # The input branch is always exactly 1 index before the output.
+                in_idx = i - 1
                 N[i, in_idx] = 1.0  # i_in = 0
+
+        # --- NON-LINEAR: DIODE ---
+        elif type_letter == 'D':
+            import zlel.zlel_p3 as zl3  # Local import to avoid circular
+            # dependency
+            I0, nD = val[0], val[1]
+            Vdj = v_j[i]
+
+            gd, Id = zl3.diode_NR(I0, nD, Vdj)
+
+            M[i, i] = gd
+            N[i, i] = 1.0
+            Us[i, 0] = Id
+
+        # --- NON-LINEAR: BJT NPN ---
+        elif type_letter == 'Q':
+            import zlel.zlel_p3 as zl3
+            Ies, Ics, betaF = val[0], val[1], val[2]
+
+            # Since BOTH iE and iC are defined as flowing OUT of the transistor
+            # in bjt_NR and our branches _be and _bc also flow OUT,  N = +1.0
+            # for both. Also, build_branches creates _be and _bc are created
+            # concecutively.
+            if branch_name.endswith("_be"):
+                idx_be = i
+                idx_bc = i + 1
+                Vbej, Vbcj = v_j[idx_be], v_j[idx_bc]
+
+                g11, g12, _, _, IE, _ = zl3.bjt_NR(Ies, Ics, betaF, Vbej, Vbcj)
+
+                # Equation: iE + g11*VBE + g12*VBC = IE
+                N[i, i] = 1.0
+                M[i, i] = g11
+                M[i, idx_bc] = g12
+                Us[i, 0] = IE
+            else:
+                idx_bc = i
+                idx_be = i - 1
+                Vbej, Vbcj = v_j[idx_be], v_j[idx_bc]
+
+                _, _, g21, g22, _, IC = zl3.bjt_NR(Ies, Ics, betaF, Vbej, Vbcj)
+
+                # Equation: iC + g21*VBE + g22*VBC = IC
+                N[i, i] = 1.0
+                M[i, idx_be] = g21
+                M[i, i] = g22
+                Us[i, 0] = IC
 
     return M, N, Us
 
@@ -535,4 +587,5 @@ def print_cir_info(cir_el, cir_nd, b, n, nodes, el_num):
     print("v"+str(b))
 
     # IT IS RECOMMENDED TO USE THIS FUNCTION WITH NO MODIFICATION.
+
 
