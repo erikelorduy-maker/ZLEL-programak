@@ -378,7 +378,8 @@ def check_circuit_errors(Aa, br_el, cir_el, cir_val, nodes):
                          f"Node {bad_node}. Offending sources: {sources_str}")
 
 
-def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False, v_j=None):
+def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False, v_j=None, x_k=None,
+              h=0.0, n=0):
     """
     Builds the Branch Constitutive Equation (BCE) matrices: M, N, and Us. It
     can handle non-linear elements using Newton-Raphson.
@@ -403,6 +404,16 @@ def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False, v_j=None):
     v_j : numpy.ndarray, optional
         Array of branch voltages at the current NR iteration. Defaults to
         None.
+    x_k : nupmpy.ndarray, optional
+        Column vector containing the Tableau solution from the previous time 
+        step (k). Used to extract historical voltages/currents for dynamic 
+        elements (C, L). Defaults to None.
+    h : float, optional
+        Time step size of the transient simulation. Used to calculate the 
+        discrete equivalents of dynamic elements. Defaults to 0.0
+    n : integer, optional
+        Total number of unique nodes in the circuit. Used to calculate the 
+        index offsets when extracting values from the x_k vector. Defaults to 0.
 
     Returns
     -------
@@ -529,6 +540,34 @@ def build_bce(br_el, br_val, br_ctr, b, t=0.0, is_op=False, v_j=None):
                 M[i, i] = g22
                 Us[i, 0] = IC
 
+        # --- DYNAMIC: CAPACITOR ---
+        elif type_letter == 'C':
+            if t == 0.0:
+                # 1st Iteration: Acts as an ideal voltage source using Vc,0
+                M[i, i] = 1.0
+                Us[i, 0] = val[1]  # initial voltage
+            else:
+                # Backward Euler Equivalent:
+                # v_{c,k+1} - (h/C)*i_{c,k+1} = v_{c,k}
+                v_ck = x_k[n - 1 + i, 0]  # Extract previous voltage from x_k
+                M[i, i] = 1.0
+                N[i, i] = -(h / val[0])   # val[0] is Capacitance (C)
+                Us[i, 0] = v_ck
+
+        # --- DYNAMIC: INDUCTOR ---
+        elif type_letter == 'L':
+            if t == 0.0:
+                # 1st Iteration: Acts as an ideal current source using Il,0
+                N[i, i] = 1.0
+                Us[i, 0] = val[1]  # val[1] is the initial current
+            else:
+                # Backward Euler Equivalent:
+                # v_{L,k+1} - (L/h)*i_{L,k+1} = -(L/h)*i_{L,k}
+                i_lk = x_k[n - 1 + b + i, 0]  # Extract previous current in x_k
+                M[i, i] = 1.0
+                N[i, i] = -(val[0] / h)       # val[0] is Inductance (L)
+                Us[i, 0] = -(val[0] / h) * i_lk
+
     return M, N, Us
 
 
@@ -587,5 +626,3 @@ def print_cir_info(cir_el, cir_nd, b, n, nodes, el_num):
     print("v"+str(b))
 
     # IT IS RECOMMENDED TO USE THIS FUNCTION WITH NO MODIFICATION.
-
-
