@@ -117,18 +117,21 @@ def simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A, has_nl):
     with open(filepath, 'w') as file:
         print(header, file=file)
 
-        # We use np.arange with a tiny buffer on 'end' to ensure the final step is included
         t = start
+        h = step
+        x_k = None
         while t <= end + (step / 10.0):
             if has_nl:
                 import zlel.zlel_p3 as zl3
-                sol = zl3.solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t)
+                sol = zl3.solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t,
+                                           x_k=x_k, h=h)
             else:
                 # 1. Get physics matrices for this EXACT moment in time
-                M, N, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=t)
+                M, N_mat, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=t,
+                                             x_k=x_k, h=h, n=n)
 
                 # 2. Build and solve Tableau
-                T, U = build_tableau(A, M, N, Us, b, n)
+                T, U = build_tableau(A, M, N_mat, Us, b, n)
                 try:
                     sol = np.linalg.solve(T, U)
                 except np.linalg.LinAlgError:
@@ -144,6 +147,8 @@ def simulate_tr(cir_sim, filename, br_el, br_val, br_ctr, b, n, A, has_nl):
             sol_csv = ','.join(['%.9f' % num for num in csv_row])
             print(sol_csv, file=file)
 
+            # 5. Save the current state for the NEXT Backward Euler iteration
+            x_k = np.copy(sol)
             t = round(t + step, 10)  # Round to prevent floating point drift
 
 
