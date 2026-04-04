@@ -130,7 +130,8 @@ def bjt_NR(Ies, Ics, betaF, Vbej, Vbcj):
     return g11, g12, g21, g22, IE, IC
 
 
-def solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t=0.0, is_op=False):
+def solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t=0.0, is_op=False,
+                     x_k=None, h=0.0):
     """
     Solves a non-linear circuit using the Newton-Raphson method.
 
@@ -153,6 +154,10 @@ def solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t=0.0, is_op=False):
         Time (for transient analysis). The default is 0.0.
     is_op : boolean, optional
         Flag for .OP analysis. The default is False.
+    x_k : nupmpy.ndarray, optional
+        Array with the solutions of the tableu equations of the kth iteration.
+    h : float, optional
+        Time step of the simulation.
 
     Returns
     -------
@@ -175,8 +180,8 @@ def solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t=0.0, is_op=False):
     # 3. The Newton-Raphson Iteration Loop
     for iter_count in range(N_max):
         # a) Build Physics matrices using current v_j guesses
-        M, N_mat, Us = zl1.build_bce(
-            br_el, br_val, br_ctr, b, t=t, is_op=is_op, v_j=v_j)
+        M, N_mat, Us = zl1.build_bce(br_el, br_val, br_ctr, b, t=t,
+                                     is_op=is_op, v_j=v_j, x_k=x_k, h=h, n=n)
 
         # b) Build and solve the linear Tableau system
         T, U = zl2.build_tableau(A, M, N_mat, Us, b, n)
@@ -210,4 +215,4 @@ def solve_nl_circuit(br_el, br_val, br_ctr, b, n, A, t=0.0, is_op=False):
 
 
 if __name__ == "__main__":
-  pass
+    pass
